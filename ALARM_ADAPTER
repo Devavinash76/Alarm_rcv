@@ -1,0 +1,89 @@
+
+import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.RecyclerView;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
+import android.widget.TextView;
+
+import com.notebook.notes.R;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * File:         AlarmCreateAdapter.java
+ * Created:      12/12/2018
+ * Last Changed: 12/12/2018 1:25 PM
+ * Author:       <A HREF="mailto:rakesh@plowns.com">Rakesh Kumar</A>
+ * <p>
+ * This code is copyright © 2016 Plowns
+ **/
+public class AlarmCreateAdapter extends RecyclerView.Adapter<AlarmCreateAdapter.AlarmFormViewHolder> {
+    private final AlarmCreateActivity.AlarmFormItemSelectedListener alarmFormItemSelectedListener;
+    private final List<AlarmCreateActivity.AlarmFormItem> formFields;
+
+    AlarmCreateAdapter(List<AlarmCreateActivity.AlarmFormItem> formFields, AlarmCreateActivity.AlarmFormItemSelectedListener alarmFormItemSelectedListener){
+        this.formFields = formFields;
+        this.alarmFormItemSelectedListener = alarmFormItemSelectedListener;
+    }
+    @NonNull
+    @Override
+    public AlarmFormViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+        View itemView = LayoutInflater.from(parent.getContext()).inflate(R.layout.alarm_form_list_item,
+                parent, false);
+        return new AlarmFormViewHolder(itemView);
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull AlarmFormViewHolder holder, int position) {
+        AlarmCreateActivity.AlarmFormItem formItem = formFields.get(position);
+        holder.populateData(formItem);
+    }
+
+    @Override
+    public int getItemCount() {
+        return formFields.size();
+    }
+
+    class AlarmFormViewHolder extends RecyclerView.ViewHolder {
+        TextView labelTextView;
+        TextView displayValueTextView;
+        CheckBox formFieldCheckBox;
+        AlarmFormViewHolder(View itemView) {
+            super(itemView);
+            labelTextView = itemView.findViewById(R.id.label_name);
+            displayValueTextView = itemView.findViewById(R.id.field_display_value);
+            formFieldCheckBox = itemView.findViewById(R.id.checkBox);
+        }
+
+        void populateData(final AlarmCreateActivity.AlarmFormItem formItem){
+            labelTextView.setText(formItem.name);
+            displayValueTextView.setText(formItem.displayValue);
+            formFieldCheckBox.setVisibility(formItem.showCheckBox? View.VISIBLE: View.GONE);
+            formFieldCheckBox.setChecked(formItem.isChecked);
+            itemView.setTag(formItem);
+            itemView.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    AlarmCreateActivity.AlarmFormItem item = (AlarmCreateActivity.AlarmFormItem) v.getTag();
+                    if(item.showCheckBox){
+                        formFieldCheckBox.setChecked(!item.isChecked);
+                        return;
+                    }
+                    if(alarmFormItemSelectedListener!=null){
+                        alarmFormItemSelectedListener.onFormItemSelected(item);
+                    }
+                }
+            });
+            formFieldCheckBox.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                formItem.isChecked = isChecked;
+                if(alarmFormItemSelectedListener!=null){
+                    alarmFormItemSelectedListener.onFormItemSelected(formItem);
+                }
+            });
+        }
+    }
+}
