@@ -1,5 +1,4 @@
-package com.example.appmeno;
-
+ 
 import static com.example.appmeno.AlarmCreateActivity.EXTRA_ALARM_ID;
 import static com.example.appmeno.AlarmCreateActivity.EXTRA_ALARM_TEXT;
 import static com.example.appmeno.util.AlarmUtils.TIME_FORMAT;
