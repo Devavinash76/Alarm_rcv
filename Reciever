@@ -1,0 +1,316 @@
+package com.example.appmeno;
+
+import static com.example.appmeno.AlarmCreateActivity.EXTRA_ALARM_ID;
+import static com.example.appmeno.AlarmCreateActivity.EXTRA_ALARM_TEXT;
+import static com.example.appmeno.util.AlarmUtils.TIME_FORMAT;
+import static com.example.appmeno.util.Utils.getValueOrEmptyString;
+
+import android.annotation.SuppressLint;
+import android.app.AlarmManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
+import android.media.AudioAttributes;
+import android.media.RingtoneManager;
+import android.net.Uri;
+import android.os.Build;
+import android.text.TextUtils;
+import android.util.Log;
+import android.widget.Toast;
+
+import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
+
+import com.example.appmeno.alarmsettings.AlarmDbHandler;
+import com.example.appmeno.alarmsettings.VocalAlarmDTO;
+import com.example.appmeno.util.AlarmUtils;
+import com.notebook.app.alarm.AlarmNotificationHandler;
+import com.notebook.notes.R;
+
+import java.text.ParseException;
+import java.util.Calendar;
+import java.util.Date;
+
+public class AlarmReceiver extends BroadcastReceiver {
+    private final static String TAG = AlarmReceiver.class.getSimpleName();
+    public static int NOTIFICATION_ALARM_ID = 189;
+    private Context mContext;
+    private int alarmId;
+    private String alarmText;
+    private Uri mAlarmSound;
+
+    //Convenience method for setting a notification
+    public static void setReminderAlarm(Context context, VocalAlarmDTO alarm) {
+        //Check whether the alarm is set to run on any days
+        if (!AlarmUtils.isAlarmActive(alarm)) {
+            //If alarm not set to run on any days, cancel any existing notifications for this alarm
+            AlarmUtils.cancelReminderAlarm(context, alarm.getAlarmId());
+            return;
+        }
+
+        final Calendar nextAlarmTime = getTimeForNextAlarm(alarm);
+        if (nextAlarmTime.after(Calendar.getInstance())) {
+            alarm.setTime(AlarmUtils.TIME_FORMAT.format(nextAlarmTime.getTime()));
+            Intent intentAlarm = new Intent(context, AlarmReceiver.class);
+            intentAlarm.putExtra(EXTRA_ALARM_ID, alarm.getAlarmId());
+            PendingIntent pending = PendingIntent.getBroadcast(context, alarm.getAlarmId(),
+                    intentAlarm, PendingIntent.FLAG_IMMUTABLE);
+            AlarmManager alarmManager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            //  alarmManager.setExact(AlarmManager.RTC_WAKEUP, nextAlarmTime.getTimeInMillis(), pending);
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextAlarmTime.getTimeInMillis(), pending);
+        }
+    }
+
+    /**
+     * Calculates the actual time of the next alarm/notification based on the user-set time the
+     * alarm should sound each day, the days the alarm is set to run, and the current time.
+     *
+     * @param alarm Alarm containing the daily time the alarm is set to run and days the alarm
+     *              should run
+     * @return A Calendar with the actual time of the next alarm.
+     */
+    private static Calendar getTimeForNextAlarm(VocalAlarmDTO alarm) {
+
+        Calendar calendar = Calendar.getInstance();
+
+
+        try {
+            Date dateTime = TIME_FORMAT.parse(getValueOrEmptyString(alarm.getTime()));
+            calendar.set(Calendar.HOUR_OF_DAY, dateTime.getHours());
+            calendar.set(Calendar.MINUTE, dateTime.getMinutes());
+            Log.e("TIMEFOR REPET", calendar.toString());
+        } catch (ParseException e) {
+            Log.e("getTimeForNextAlarm", "Exception in Parsing time", e);
+        }
+
+        final long currentTime = System.currentTimeMillis();
+        final int startIndex = getStartIndexFromTime(calendar);
+
+        int count = 0;
+        boolean isAlarmSetForDay;
+        if (!TextUtils.isEmpty(alarm.getRepeat())) {
+            String[] checkedValues = alarm.getRepeat().split(",");
+
+            do {
+                final int index = (startIndex + count) % 7;
+                isAlarmSetForDay =
+                        Boolean.valueOf(checkedValues[index]) && (calendar.getTimeInMillis() > currentTime);
+                if (!isAlarmSetForDay) {
+                    calendar.add(Calendar.DAY_OF_MONTH, 1);
+                    count++;
+                }
+            } while (!isAlarmSetForDay && count < 7);
+        }
+        return calendar;
+
+    }
+
+    private static int getStartIndexFromTime(Calendar c) {
+
+        final int dayOfWeek = c.get(Calendar.DAY_OF_WEEK);
+
+        int startIndex = 0;
+        switch (dayOfWeek) {
+            case Calendar.MONDAY:
+                startIndex = 0;
+                break;
+            case Calendar.TUESDAY:
+                startIndex = 1;
+                break;
+            case Calendar.WEDNESDAY:
+                startIndex = 2;
+                break;
+            case Calendar.THURSDAY:
+                startIndex = 3;
+                break;
+            case Calendar.FRIDAY:
+                startIndex = 4;
+                break;
+            case Calendar.SATURDAY:
+                startIndex = 5;
+                break;
+            case Calendar.SUNDAY:
+                startIndex = 6;
+                break;
+        }
+
+        return startIndex;
+
+    }
+
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        Log.d(TAG, "onReceiveDeepankar: " + intent.getExtras().toString());
+//        Toast.makeText(context, "Alarm Recived", Toast.LENGTH_SHORT).show();
+        alarmId = intent.getIntExtra(EXTRA_ALARM_ID, -1);
+        alarmText = intent.getStringExtra(EXTRA_ALARM_TEXT);
+        AlarmDbHandler alarmDbHandler = new AlarmDbHandler(context);
+        VocalAlarmDTO reminder = alarmDbHandler.getReminderById(alarmId);
+        if (reminder == null) {
+            return;
+        }
+        alarmDbHandler = new AlarmDbHandler(context);
+        VocalAlarmDTO mAlarm = alarmDbHandler.getReminderById(alarmId);
+        if (mAlarm == null) {
+            Log.e(TAG, "onReceive: Reminder not found for id: " + alarmId);
+            return;
+        }
+
+        if (TextUtils.isEmpty(mAlarm.getRingToneUrl())) {
+            mAlarmSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+        } else {
+            mAlarmSound = Uri.parse(mAlarm.getRingToneUrl());
+        }
+
+        setReminderAlarm(context, reminder);
+        mContext = context;
+        notifyAlarm("New Alarm " + mAlarm.getTime(), mAlarm.getLabel());
+    }
+
+    private void notifyAlarm(String title, String message) {
+
+        Intent intent = new Intent(mContext, AlarmFireActivity.class);
+        // intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.putExtra(EXTRA_ALARM_ID, alarmId);
+        intent.putExtra(EXTRA_ALARM_TEXT, alarmText);
+        //intent.startActivity(ringer);
+        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        @SuppressLint("UnspecifiedImmutableFlag")
+        final PendingIntent resultPendingIntent =
+                PendingIntent.getActivity(mContext, 0, intent, PendingIntent.FLAG_IMMUTABLE);
+
+        NotificationManager notificationManager = (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+
+        // The id of the channel.
+        String id = "alarm"+System.currentTimeMillis();
+        // The user-visible name of the channel.
+        CharSequence name = "Alarm";
+        // The user-visible description of the channel.
+        String description = "Notification for alarm.";
+        AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .build();
+        NotificationCompat.Builder notification = new NotificationCompat.Builder(mContext, id)
+                .setContentTitle(title)
+                .setContentText(message)
+                .setCategory(NotificationCompat.CATEGORY_EVENT)
+                .setFullScreenIntent(resultPendingIntent, true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setWhen(System.currentTimeMillis())
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSound(mAlarmSound)
+                .setLargeIcon(BitmapFactory.decodeResource(mContext.getResources(), R.mipmap.ic_launcher))
+                .setColor(ContextCompat.getColor(mContext, R.color.sky_blue))
+                .addAction(R.drawable.transparent,
+                        "Open",
+                        getPendingIntent(0))
+                .addAction(R.drawable.transparent,
+                        "Snooze",
+                        getPendingIntent(1))
+                .addAction(R.drawable.transparent,
+                        "Dismiss",
+                        getPendingIntent(2));
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            NotificationChannel mChannel;
+            int importance = NotificationManager.IMPORTANCE_HIGH;
+            mChannel = new NotificationChannel(id, name, importance);
+            mChannel.setDescription(description);
+            mChannel.enableLights(true);
+            mChannel.setLightColor(Color.RED);
+            mChannel.enableVibration(true);
+            mChannel.setSound(mAlarmSound, audioAttributes);
+
+            mChannel.setVibrationPattern(new long[]{100, 200, 300, 400, 500, 400, 300, 200, 400});
+            notificationManager.createNotificationChannel(mChannel);
+
+        }
+
+
+
+
+        notificationManager.notify(NOTIFICATION_ALARM_ID, notification.build());
+
+    }
+
+//    private void notifyAlarm(String title, String message) {
+//
+//        Intent intent = new Intent(mContext, AlarmFireActivity.class);
+//        // intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+//        intent.putExtra(EXTRA_ALARM_ID, alarmId);
+//        intent.putExtra(EXTRA_ALARM_TEXT, alarmText);
+//        //intent.startActivity(ringer);
+//        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+//
+//        /*@SuppressLint("UnspecifiedImmutableFlag")*/ final PendingIntent resultPendingIntent =
+//                PendingIntent.getActivity(mContext, 0, intent, PendingIntent.FLAG_IMMUTABLE);
+//
+//        NotificationManager notificationManager = (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+//
+//        // The id of the channel.
+//        String id = "alarm";
+//        // The user-visible name of the channel.
+//        CharSequence name = "Alarm";
+//        // The user-visible description of the channel.
+//        String description = "Notification for alarm.";
+//
+//        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+//            NotificationChannel mChannel;
+//            int importance = NotificationManager.IMPORTANCE_HIGH;
+//            mChannel = new NotificationChannel(id, name, importance);
+//            mChannel.setDescription(description);
+//            mChannel.enableLights(true);
+//            mChannel.setLightColor(Color.RED);
+//            mChannel.enableVibration(true);
+//            mChannel.setSound(mAlarmSound, Notification.AUDIO_ATTRIBUTES_DEFAULT);
+//            mChannel.setVibrationPattern(new long[]{100, 200, 300, 400, 500, 400, 300, 200, 400});
+//            notificationManager.createNotificationChannel(mChannel);
+//        }
+//
+//        NotificationCompat.Builder notification = new NotificationCompat.Builder(mContext, id)
+//                .setContentTitle(title)
+//                .setContentText(message)
+//                .setCategory(NotificationCompat.CATEGORY_ALARM)
+//                .setFullScreenIntent(resultPendingIntent, true)
+//                .setPriority(NotificationCompat.PRIORITY_HIGH)
+//                .setWhen(System.currentTimeMillis())
+//                .setSmallIcon(R.mipmap.ic_launcher)
+//                .setLargeIcon(BitmapFactory.decodeResource(mContext.getResources(), R.mipmap.ic_launcher))
+//                .setColor(ContextCompat.getColor(mContext, R.color.sky_blue))
+//                .addAction(R.drawable.transparent,
+//                        "Open",
+//                        getPendingIntent(0))
+//                .addAction(R.drawable.transparent,
+//                        "Snooze",
+//                        getPendingIntent(1))
+//                .addAction(R.drawable.transparent,
+//                        "Dismiss",
+//                        getPendingIntent(2));
+//
+//        notificationManager.notify(NOTIFICATION_ALARM_ID, notification.build());
+//    }
+
+    private PendingIntent getPendingIntent(int type) {
+        Intent intent = new Intent(mContext, AlarmNotificationHandler.class);
+        if (type == 0) {
+            intent.setAction(AlarmNotificationHandler.INTENT_ACTION_OPEN_ALARM);
+        } else if (type == 1) {
+            intent.setAction(AlarmNotificationHandler.INTENT_ACTION_SNOOZE_ALARM);
+        } else {
+            intent.setAction(AlarmNotificationHandler.INTENT_ACTION_DISMISS_ALARM);
+        }
+        intent.putExtra(AlarmNotificationHandler.INTENT_EXTRA_ALARM_ID, alarmId);
+        intent.putExtra(AlarmNotificationHandler.INTENT_EXTRA_ALARM_TEXT, alarmText);
+        intent.setPackage(mContext.getPackageName());
+        return PendingIntent.getBroadcast(mContext, 0, intent, PendingIntent.FLAG_IMMUTABLE);
+    }
+
+}
