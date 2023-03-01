@@ -1,0 +1,656 @@
+import static android.media.AudioManager.FLAG_SHOW_UI;
+import static android.media.AudioManager.STREAM_MUSIC;
+import static android.speech.tts.TextToSpeech.LANG_MISSING_DATA;
+import static android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED;
+import static android.speech.tts.TextToSpeech.QUEUE_FLUSH;
+import static com.example.appmeno.AlarmCreateActivity.EXTRA_ALARM_ID;
+import static com.notebook.app.alarm.AlarmNotificationHandler.dismissAlarmNotification;
+
+import android.app.AlarmManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.media.AudioManager;
+import android.media.MediaPlayer;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Vibrator;
+import android.speech.tts.TextToSpeech;
+import android.text.TextUtils;
+import android.text.format.DateFormat;
+import android.util.Log;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.TextView;
+
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.example.appmeno.alarmsettings.AlarmDbHandler;
+import com.example.appmeno.alarmsettings.VocalAlarmDTO;
+import com.example.appmeno.alarmsettings.VocalMessageDto;
+import com.example.appmeno.util.AlarmUtils;
+import com.notebook.app.utility.LocalStorageHandler;
+import com.notebook.app.utility.Note_Details;
+import com.notebook.notes.R;
+
+import org.json.JSONObject;
+
+import java.io.IOException;
+import java.util.Calendar;
+import java.util.Locale;
+import java.util.Timer;
+import java.util.TimerTask;
+
+public class AlarmFireActivity extends AppCompatActivity implements TextToSpeech.OnInitListener, TextToSpeech.OnUtteranceCompletedListener {
+    private final String TAG = "AlarmFireActivity";
+    private final long[] mVibratePattern = {0, 500, 500};
+    boolean firstplayaudio = true;
+    boolean alarmKilled = false;
+    private TextToSpeech mTts;
+    private AudioManager audio;
+    private MediaPlayer mPlayer = null;
+    private int amStreamMusicVol = 10;
+    private Ringtone mRingtone;
+    private Vibrator mVibrator;
+    private boolean mVibrate;
+    private Uri mAlarmSound;
+    private long mPlayTime;
+    private Timer mTimer = null;
+    private VocalAlarmDTO mAlarm;
+    private VocalMessageDto mVocalMessage;
+    private int repeat = 0;
+    private int volume_fadein = 1;
+    private int volume_max = 15;
+    private String tts = "";
+    private TextView mTextView;
+    private TextView mTimeTextView;
+    private PlayTimerTask mTimerTask;
+    private AlarmDbHandler alarmDbHandler;
+
+
+    @Override
+    public void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_FULLSCREEN);
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_alarm_fire);
+        dismissAlarmNotification();
+        Log.d("AlarmReceiver >> ", "AlarmFireActivity Is Calling");
+        ActionBar ab = getSupportActionBar();
+        if (ab != null) {
+            ab.hide();
+        }
+        alarmDbHandler = new AlarmDbHandler(AlarmFireActivity.this);
+        mTextView = (TextView) findViewById(R.id.alarm_title_text);
+        mTimeTextView = (TextView) findViewById(R.id.alarm_time);
+
+
+        readPreferences(getIntent());
+        mTts = new TextToSpeech(this, this);
+        audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        amStreamMusicVol = audio.getStreamVolume(STREAM_MUSIC);
+        this.volume_max = audio.getStreamMaxVolume(STREAM_MUSIC);
+        mRingtone = RingtoneManager.getRingtone(getApplicationContext(), mAlarmSound);
+        if (mVibrate)
+            mVibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+    }
+
+
+    private void playAudioMsg(final int paramInt, String audioUrl) {
+        this.mPlayer = new MediaPlayer();
+        this.mPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+            public void onCompletion(MediaPlayer paramAnonymousMediaPlayer) {
+                AlarmFireActivity.this.mPlayer.stop();
+                AlarmFireActivity.this.mPlayer.release();
+                if (AlarmFireActivity.this.firstplayaudio) {
+                    AlarmFireActivity.this.firstplayaudio = false;
+                    AlarmFireActivity.this.sayVocalMessage();
+                    return;
+                }
+                AlarmFireActivity.this.speak(AlarmFireActivity.this.tts, paramInt, mVocalMessage.isFadeIn());
+            }
+        });
+        try {
+            this.mPlayer.setDataSource(audioUrl);
+            audio.setStreamVolume(STREAM_MUSIC, paramInt, FLAG_SHOW_UI);
+            float f = paramInt;
+            this.mPlayer.setVolume(f, f);
+            this.mPlayer.prepare();
+            this.mPlayer.start();
+            return;
+        } catch (IOException localIOException) {
+            Log.d(TAG, "Exception playAudioMsg prepare() failed", localIOException);
+        }
+        if (this.firstplayaudio) {
+            this.firstplayaudio = false;
+            sayVocalMessage();
+            return;
+        }
+        speak(this.tts, paramInt, mVocalMessage.isFadeIn());
+    }
+
+    private void sayVocalMessage() {
+        String timeString = getTimeString();
+        StringBuilder localStringBuilder = new StringBuilder();
+        Log.d(TAG, "onInit : sayVocalMessage inside");
+        switch (this.mVocalMessage.getSayTime()) {
+            case YES_BP:
+                localStringBuilder.append(timeString);
+                localStringBuilder.append(". ");
+                localStringBuilder.append(this.mVocalMessage.getPersonalizedText());
+                this.tts = localStringBuilder.toString();
+                break;
+            case YES_AP:
+                localStringBuilder = new StringBuilder();
+                localStringBuilder.append(this.mVocalMessage.getPersonalizedText());
+                localStringBuilder.append(". ");
+                localStringBuilder.append(timeString);
+                this.tts = localStringBuilder.toString();
+                break;
+            case YES_ABP:
+                localStringBuilder = new StringBuilder();
+                localStringBuilder.append(timeString);
+                localStringBuilder.append(". ");
+                localStringBuilder.append(this.mVocalMessage.getPersonalizedText());
+                localStringBuilder.append(". ");
+                localStringBuilder.append(timeString);
+                this.tts = localStringBuilder.toString();
+                break;
+            case NO:
+            default:
+                this.tts = this.mVocalMessage.getPersonalizedText();
+
+        }
+
+        if (this.mVocalMessage.isFadeIn()) {
+            Log.d(TAG, "onInit : sayVocalMessage mVocalMessage.isFadeIn");
+            speak(this.tts, 1, false);
+            return;
+        }
+        int i = this.mAlarm.getVocalVolume();
+        Log.d(TAG, "onInit : sayVocalMessage speak");
+        speak(this.tts, i, false);
+    }
+
+
+    private void speak(String paramString, int paramInt, boolean paramBoolean) {
+        if (paramString != null && !paramString.isEmpty()) {
+            audio.setStreamVolume(STREAM_MUSIC, paramInt, 0);
+            this.mTts.setOnUtteranceCompletedListener(this);
+            this.mTts.setSpeechRate(this.mAlarm.getVocalSpeed());
+            this.mTts.setPitch(this.mAlarm.getVocalPitch());
+            this.mTts.speak(paramString, QUEUE_FLUSH, null, "IDOrario");
+        } else {
+            Log.d(TAG, "speak : else start()");
+            start();
+        }
+    }
+
+
+    private String getTimeString() {
+        Calendar calendar = Calendar.getInstance();
+        calendar.setTimeInMillis(System.currentTimeMillis());
+        int j = calendar.get(Calendar.HOUR);
+        int k = calendar.get(Calendar.MINUTE);
+
+        int i = j;
+        if (DateFormat.is24HourFormat(this)) {
+            i = j;
+            if (calendar.get(Calendar.AM_PM) != 0) {
+                i = j + 12;
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+
+        if (Locale.getDefault().getLanguage().equals("en") || Locale.getDefault().getLanguage().equals("us")) {
+            if (k == 0) {
+                sb.append("It's ");
+                sb.append(i);
+                sb.append("o clock!");
+                return sb.toString();
+            }
+            sb.append("It's ");
+            sb.append(i);
+            sb.append(" ");
+            sb.append(k);
+            sb.append("!");
+            return sb.toString();
+        }
+        sb.append(i);
+        sb.append(" ");
+        sb.append(k);
+        sb.append("!");
+        return sb.toString();
+    }
+
+
+    @Override
+    public void onInit(int status) {
+        Log.d(TAG, "onInit : " + status);
+        if (status == TextToSpeech.SUCCESS) {
+            if (mTts != null) {
+                Log.d(TAG, "onInit : mTts not null");
+                int result = mTts.setLanguage(Locale.US);
+                if ((this.mTts.isLanguageAvailable(Locale.getDefault()) != LANG_MISSING_DATA) && (this.mTts.isLanguageAvailable(Locale.getDefault()) != LANG_NOT_SUPPORTED)) {
+                    result = this.mTts.setLanguage(Locale.getDefault());
+                }
+                if (result == LANG_MISSING_DATA || result == LANG_NOT_SUPPORTED) {
+                    Log.d(TAG, "TTS language is not supported");
+                    //Toast.makeText(this, "TTS language is not supported", Toast.LENGTH_LONG).show();
+                    finish();
+                } else {
+                    Log.d(TAG, "onInit : else");
+                    if (this.mVocalMessage.getVocalMessageUrl() != null) {
+                        Log.d(TAG, "onInit : getVocalMessageUrl ");
+                        if (this.mVocalMessage.isFadeIn()) {
+                            Log.d(TAG, "onInit : isFadeIn ");
+                            playAudioMsg(1, this.mVocalMessage.getVocalMessageUrl());
+                        } else {
+                            Log.d(TAG, "onInit : isFadeIn else");
+                            playAudioMsg(this.mAlarm.getVocalVolume(), this.mVocalMessage.getVocalMessageUrl());
+                        }
+                    } else {
+                        Log.d(TAG, "onInit : sayVocalMessage");
+                        sayVocalMessage();
+                    }
+                }
+            }
+        } else {
+            Log.d(TAG, "TTS initialization failed");
+//            Toast.makeText(this, "TTS initialization failed", Toast.LENGTH_LONG).show();
+            finish();
+        }
+    }
+
+    @Override
+    public void onUtteranceCompleted(String paramString) {
+        Log.d(TAG, "onUtteranceCompleted : " + paramString);
+        if (!this.alarmKilled) {
+            Log.d(TAG, "onUtteranceCompleted : alarmKilled");
+            this.repeat += 1;
+            if (AlarmUtils.getAlarmRepeat(this.mVocalMessage.getRepeatVocal()) > this.repeat) {
+                Log.d(TAG, "onUtteranceCompleted : getAlarmRepeat 1");
+                if (this.mVocalMessage.getVocalMessageUrl() != null) {
+                    playAudioMsg(this.mAlarm.getVocalVolume(), this.mVocalMessage.getVocalMessageUrl());
+                    return;
+                }
+                speak(this.tts, this.mAlarm.getVocalVolume(), this.mVocalMessage.isFadeIn());
+                return;
+            } else if (AlarmUtils.getAlarmRepeat(this.mVocalMessage.getRepeatVocal()) == 0) {
+                Log.d(TAG, "onUtteranceCompleted : getAlarmRepeat 0");
+                if (this.mVocalMessage.isFadeIn()) {
+                    this.volume_fadein += 1;
+                    if (this.mVocalMessage.getVocalMessageUrl() != null) {
+                        if (this.volume_fadein < this.volume_max) {
+                            playAudioMsg(this.volume_fadein, this.mVocalMessage.getVocalMessageUrl());
+                        } else {
+                            playAudioMsg(this.volume_max, this.mVocalMessage.getVocalMessageUrl());
+                        }
+                        return;
+                    }
+                    if (this.volume_fadein < this.volume_max) {
+                        speak(this.tts, this.volume_fadein, mVocalMessage.isFadeIn());
+                    } else {
+                        speak(this.tts, this.volume_max, mVocalMessage.isFadeIn());
+                    }
+                    return;
+                }
+                if (this.mVocalMessage.getVocalMessageUrl() != null) {
+                    playAudioMsg(this.mAlarm.getVocalVolume(), this.mVocalMessage.getVocalMessageUrl());
+                    return;
+                }
+                speak(this.tts, this.mAlarm.getVocalVolume(), this.mVocalMessage.isFadeIn());
+            } else {
+                Log.d(TAG, "onUtteranceCompleted : else start()");
+                start();
+            }
+        }
+    }
+
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        AudioManager localAudioManager1 = this.audio;
+        localAudioManager1.setStreamVolume(STREAM_MUSIC, this.amStreamMusicVol, 0);
+    }
+
+
+    @Override
+    protected void onDestroy() {
+        if (this.mTts != null) {
+            this.mTts.stop();
+            this.mTts.shutdown();
+        }
+
+        stop();
+
+        Log.i(TAG, "AlarmNotification.onDestroy()");
+        super.onDestroy();
+
+
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Log.i(TAG, "AlarmNotification.onNewIntent()");
+        if (intent == null) {
+            return;
+        }
+        addNotification(mAlarm);
+
+        stop();
+
+        readPreferences(intent);
+
+        if (this.mVocalMessage.getVocalMessageUrl() != null) {
+            if (this.mVocalMessage.isFadeIn()) {
+                playAudioMsg(1, this.mVocalMessage.getVocalMessageUrl());
+            } else {
+                playAudioMsg(this.mAlarm.getVocalVolume(), this.mVocalMessage.getVocalMessageUrl());
+            }
+        } else {
+            sayVocalMessage();
+        }
+    }
+
+    private void start() {
+
+        mVibrate = mAlarm.isVibrate();
+        Log.i(TAG, "AlarmNotification.start('" + mAlarm.getLabel() + "')");
+
+        mVocalMessage = mAlarm.getVocalMessage();
+        if (mVocalMessage == null) {
+            mVocalMessage = new VocalMessageDto(mAlarm.getAlarmId());
+        }
+
+
+        mTimerTask = new PlayTimerTask();
+        mTimer = new Timer();
+        mTimer.schedule(mTimerTask, mPlayTime);
+        mRingtone.play();
+        if (mVibrate)
+            mVibrator.vibrate(mVibratePattern, 0);
+    }
+
+    private void stop() {
+        Log.i(TAG, "AlarmNotification.stop()");
+        if (mTimer != null) {
+            mTimer.cancel();
+        }
+        if (mRingtone != null && mRingtone.isPlaying()) {
+            mRingtone.stop();
+        }
+        if (mVibrate && mVibrator != null)
+            mVibrator.cancel();
+
+        if (this.mPlayer != null && this.mPlayer.isPlaying()) {
+            this.mPlayer.stop();
+        }
+    }
+
+    public void onDismissClick(View view) {
+        alarmKilled = true;
+        finish();
+    }
+
+    public void onOpenClick(View view) {
+        alarmKilled = true;
+        LocalStorageHandler storageHandler = new LocalStorageHandler(this.getApplicationContext());
+        int parent = storageHandler.getGroupParent(mAlarm.getAlarmId(), 1);
+        int max = storageHandler.getIndex(parent, "" + mAlarm.getAlarmId());
+
+        Intent intent;
+        try {
+            Note_Details noteData = storageHandler.getNote("" + mAlarm.getAlarmId());
+            if (noteData.getNote_type().equalsIgnoreCase("ADVANCE_NOTE_ONLY")) {
+                intent = new Intent(this.getApplicationContext(), SingleNoteActivity.class);
+            } else if (noteData.getNote_type().equalsIgnoreCase("ADVANCE_DRAWING_ONLY")) {
+                intent = new Intent(this.getApplicationContext(), SingleDrawingActivity.class);
+            } else {
+                intent = new Intent(this.getApplicationContext(), WriteNotesActivity.class);
+            }
+        } catch (Exception e) {
+            intent = new Intent(this.getApplicationContext(), WriteNotesActivity.class);
+        }
+
+
+        intent.putExtra("max", max);
+        intent.putExtra("myid", mAlarm.getAlarmId());
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+                Intent.FLAG_ACTIVITY_CLEAR_TASK);
+
+        intent.setAction(Intent.ACTION_MAIN);
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        startActivity(intent);
+        finish();
+    }
+
+
+    public void onSnoozeClick(View view) {
+
+        alarmKilled = true;
+        if (mAlarm != null) {
+            final Calendar calendar = Calendar.getInstance();
+            try {
+                // Date dateTime = TIME_FORMAT.parse(getValueOrEmptyString(mAlarm.getTime()));
+                // calendar.set(Calendar.HOUR_OF_DAY, dateTime.getHours());
+                calendar.add(Calendar.MINUTE, getTimeForSnooze());
+            } catch (Exception e) {
+                Log.d("onSnoozeClick", "Exception in Parsing time", e);
+            }
+            Log.d("snooze time", getTimeForSnooze() + "<<");
+            Log.d("snooze alarm until", calendar.toString() + "<<");
+            if (calendar.after(Calendar.getInstance())) {
+                mAlarm.setTime(AlarmUtils.TIME_FORMAT.format(calendar.getTime()));
+                Intent intentAlarm = new Intent(getApplicationContext(), AlarmReceiver.class);
+                intentAlarm.putExtra(EXTRA_ALARM_ID, mAlarm.getAlarmId());
+                PendingIntent pending = PendingIntent.getBroadcast(getApplicationContext(), mAlarm.getAlarmId(),
+                        intentAlarm, PendingIntent.FLAG_IMMUTABLE);
+                AlarmManager alarmManager = (AlarmManager) getApplicationContext().getSystemService(Context.ALARM_SERVICE);
+                //alarmManager.setExact(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pending);
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pending);
+            }
+        }
+        finish();
+    }
+
+
+    private int getTimeForSnooze() {
+        SharedPreferences myPenPreference = getApplicationContext().getSharedPreferences("PenColor_Preferences",
+                MODE_PRIVATE);
+
+        if (myPenPreference.getString("snoozeinterval", "5mins").equals("5mins")) {
+            return 5;
+        } else if (myPenPreference.getString("snoozeinterval", "").equals("10mins")) {
+            return 10;
+        } else if (myPenPreference.getString("snoozeinterval", "").equals("15mins")) {
+            return 15;
+        } else if (myPenPreference.getString("snoozeinterval", "").equals("30mins")) {
+            return 30;
+        } else if (myPenPreference.getString("snoozeinterval", "").equals("1hour")) {
+            return 60;
+        } else {
+            return 5;
+        }
+    }
+
+    private void readPreferences(Intent intent) {
+        if (intent == null) {
+            finish();
+            return;
+        }
+        int ids = intent.getIntExtra(EXTRA_ALARM_ID, -1);
+        mAlarm = alarmDbHandler.getReminderById(ids);
+        if (mAlarm == null) {
+            finish();
+        }
+        mTextView.setText(mAlarm.getLabel());
+        mTimeTextView.setText(mAlarm.getTime());
+
+        mVocalMessage = mAlarm.getVocalMessage();
+        if (mVocalMessage == null) {
+            mVocalMessage = new VocalMessageDto(mAlarm.getAlarmId());
+        }
+        if (TextUtils.isEmpty(mAlarm.getRingToneUrl())) {
+            mAlarmSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+        } else {
+            mAlarmSound = Uri.parse(mAlarm.getRingToneUrl());
+        }
+        mVibrate = mAlarm.isVibrate();
+        mPlayTime = 30 * 1000;
+
+    }
+
+    private void addNotification(VocalAlarmDTO alarm) {
+        NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        Notification notification;
+        PendingIntent activity;
+        Intent intent;
+
+        Log.i(TAG, "AlarmNotification.addNotification(" + alarm.getAlarmId() + ", '" + alarm.getLabel() + "', '" + alarm.getTime() + "')");
+
+        LocalStorageHandler storageHandler = new LocalStorageHandler(this.getApplicationContext());
+        int parent = storageHandler.getGroupParent(alarm.getAlarmId(), 1);
+        int max = storageHandler.getIndex(parent, "" + alarm.getAlarmId());
+
+
+        try {
+            Note_Details noteData = storageHandler.getNote("" + mAlarm.getAlarmId());
+            if (noteData.getNote_type().equalsIgnoreCase("ADVANCE_NOTE_ONLY")) {
+                intent = new Intent(this.getApplicationContext(), SingleNoteActivity.class);
+            } else if (noteData.getNote_type().equalsIgnoreCase("ADVANCE_DRAWING_ONLY")) {
+                intent = new Intent(this.getApplicationContext(), SingleDrawingActivity.class);
+            } else {
+                intent = new Intent(this.getApplicationContext(), WriteNotesActivity.class);
+            }
+        } catch (Exception e) {
+            intent = new Intent(this.getApplicationContext(), WriteNotesActivity.class);
+        }
+
+
+        intent.putExtra("max", max);
+        intent.putExtra("myid", alarm.getAlarmId());
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+                Intent.FLAG_ACTIVITY_CLEAR_TASK);
+
+        intent.setAction(Intent.ACTION_MAIN);
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
+
+        activity = PendingIntent.getActivity(this, alarm.getAlarmId(), intent, PendingIntent.FLAG_IMMUTABLE);
+
+        Notification.Builder notificationBuilder = new Notification.Builder(this)
+                .setContentIntent(activity)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setAutoCancel(true)
+                .setContentTitle("Missed alarm: " + alarm.getLabel());
+//                .setContentText(mDateTime.formatDetails(alarm))
+
+//
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel("Note360", "Note360 Notifications",
+                    NotificationManager.IMPORTANCE_DEFAULT);
+            notificationManager.createNotificationChannel(channel);
+            notificationBuilder.setChannelId("Note360");
+        }
+        notification = notificationBuilder.build();
+        notificationManager.notify(alarm.getAlarmId(), notification);
+    }
+
+    @Override
+    public void onBackPressed() {
+
+    }
+
+    private void checkSnoozeTimes(VocalAlarmDTO mAlarm) {
+        Log.d("AlarmFireActivity", "checkSnoozeTimes , Alarm Id=>" + mAlarm.getAlarmId() + "<");
+        boolean haveToSnooze;
+        String alarmId = mAlarm.getAlarmId() + "";
+        SharedPreferences myPenPreference = getApplicationContext().getSharedPreferences("PenColor_Preferences",
+                MODE_PRIVATE);
+        int currentAlarmTimes = 0;
+        JSONObject jsonObject;
+        try {
+            //get all snoozed alarm's detail.
+            String data = myPenPreference.getString("alarm_snooze_list", "{}");
+            jsonObject = new JSONObject(data);
+            currentAlarmTimes = jsonObject.optInt(alarmId, 0);
+        } catch (Exception someErrorOccurred) {
+            jsonObject = new JSONObject();
+        }
+        int maxTimeOfSnooze = getHowManyTimesForSnooze();
+        if (maxTimeOfSnooze == 0) {
+            //means continuously snooze
+            haveToSnooze = true;
+        } else {
+            //current alarm is snoozed less then max times.
+            //current alarm is already snoozed till max times.
+            // so don't snooze more
+            haveToSnooze = currentAlarmTimes < maxTimeOfSnooze;
+        }
+
+        if (haveToSnooze) {
+            //let's snooze and increase value of snooze time in shared preference for future reference.
+            try {
+                jsonObject.put(alarmId, (currentAlarmTimes + 1));
+                SharedPreferences.Editor editor = myPenPreference.edit();
+                editor.putString("alarm_snooze_list", jsonObject.toString());
+                editor.apply();
+            } catch (Exception ignored) {
+            }
+            Log.d("AlarmFireActivity", "alarmList->" + jsonObject.toString() + "<");
+            onSnoozeClick(null);
+        } else {
+            //don't snooze but set default value 0 , so if user will set a new alarm with same alarm Id so it's will work like fresh.
+            try {
+                jsonObject.put(alarmId, 0);
+                SharedPreferences.Editor editor = myPenPreference.edit();
+                editor.putString("alarm_snooze_list", jsonObject.toString());
+                editor.apply();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private int getHowManyTimesForSnooze() {
+        SharedPreferences myPenPreference = getApplicationContext().getSharedPreferences("PenColor_Preferences",
+                MODE_PRIVATE);
+        if (myPenPreference.getString("snooze_repeat", "3times").equalsIgnoreCase("3times")) {
+            return 3;
+        } else if (myPenPreference.getString("snooze_repeat", "").equalsIgnoreCase("5times")) {
+            return 5;
+        } else if (myPenPreference.getString("snooze_repeat", "").equalsIgnoreCase("continuously")) {
+            return 0;
+        } else {
+            return 3;
+        }
+
+    }
+
+    private class PlayTimerTask extends TimerTask {
+        @Override
+        public void run() {
+            Log.i(TAG, "AlarmNotification.PalyTimerTask.run()");
+            addNotification(mAlarm);
+            finish();
+            //alarm missed, Lets snooze alarm
+            checkSnoozeTimes(mAlarm);
+        }
+    }
+}
