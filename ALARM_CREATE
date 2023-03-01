@@ -1,0 +1,586 @@
+ 
+
+import static android.content.DialogInterface.BUTTON_NEUTRAL;
+import static android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM;
+import static com.example.appmeno.util.Utils.getValueOrEmptyString;
+
+import android.app.AlarmManager;
+import android.app.DatePickerDialog;
+import android.app.PendingIntent;
+import android.app.TimePickerDialog;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.text.TextUtils;
+import android.util.Log;
+import android.view.View;
+import android.widget.DatePicker;
+import android.widget.EditText;
+import android.widget.TimePicker;
+import android.widget.Toast;
+
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import com.example.appmeno.alarmsettings.AlarmDbHandler;
+import com.example.appmeno.alarmsettings.VocalAlarmDTO;
+import com.example.appmeno.alarmsettings.VocalMessageDto;
+import com.example.appmeno.ringtonepicker.RingtoneSelectActivity;
+import com.example.appmeno.ringtonepicker.RingtoneUtils;
+import com.example.appmeno.util.AlarmUtils;
+import com.example.appmeno.vocal.VocalMessageActivity;
+import com.example.appmeno.vocal.VocalParamsActivity;
+import com.notebook.notes.R;
+
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
+public class AlarmCreateActivity extends AppCompatActivity {
+    final SimpleDateFormat dateFormat = new SimpleDateFormat("MM/dd/yy", Locale.US);
+    final DateFormat timeFormat = new SimpleDateFormat("hh:mm aa", Locale.US);
+    public static final String EXTRA_ALARM_ID = "extra_alarm_id";
+    public static final String EXTRA_ALARM_TEXT = "extra_alarm_text";
+    public static final String EXTRA_ALARM_VOC_MSG = "extra_alarm_voc_msg";
+    public static final String EXTRA_ALARM_SPEED = "extra_alarm_voc_speed";
+    public static final String EXTRA_ALARM_PITCH = "extra_alarm_voc_pitch";
+    public static final String EXTRA_ALARM_VOL = "extra_alarm_voc_vol";
+    public static final String EXTRA_ALARM_RINGTONE = "extra_alarm_ringtone";
+    private final int REQUEST_VOCAL_MESSAGE = 0x25;
+    private final int REQUEST_VOCAL_PARMS = 0x26;
+    private final int REQUEST_RINGTONE = 0x27;
+
+    List<AlarmFormItem> formFieldsList = new ArrayList<>();
+    AlarmCreateAdapter adapter;
+    AlarmDbHandler alarmDbHandler;
+    int alarmId;
+    VocalAlarmDTO vocalAlarmDTO;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_alarm_create);
+        ActionBar ab = getSupportActionBar();
+        if (ab != null) {
+            ab.hide();
+        }
+        alarmDbHandler = new AlarmDbHandler(getBaseContext());
+        alarmId = getIntent().getIntExtra(EXTRA_ALARM_ID, -1);
+        if (alarmId == -1) {
+            setResult(RESULT_CANCELED, null);
+            finish();
+        }
+
+        vocalAlarmDTO = alarmDbHandler.getReminderById(alarmId);
+
+        if (vocalAlarmDTO == null) {
+            vocalAlarmDTO = new VocalAlarmDTO(alarmId);
+            vocalAlarmDTO.setAlarmOn(true);
+        }
+        if (vocalAlarmDTO.getVocalMessage() == null) {
+            VocalMessageDto vocalMessageDto = new VocalMessageDto(alarmId);
+            vocalMessageDto.setPersonalizedText(getIntent().getStringExtra(EXTRA_ALARM_TEXT));
+            if (vocalMessageDto.getPersonalizedText().contains("/")) {
+                String[] text = vocalMessageDto.getPersonalizedText().split(" / ");
+                vocalMessageDto.setPersonalizedText(text[0] + "");
+            }
+            vocalAlarmDTO.setVocalMessage(vocalMessageDto);
+        }
+
+
+        createDataForForm();
+        RecyclerView recyclerView = findViewById(R.id.recyclerView);
+        adapter = new AlarmCreateAdapter(formFieldsList, alarmFormItemSelectedListener);
+        recyclerView.setAdapter(adapter);
+        LinearLayoutManager linearLayoutManager = new LinearLayoutManager(AlarmCreateActivity.this);
+        recyclerView.setLayoutManager(linearLayoutManager);
+        if (vocalAlarmDTO.getTime() == null) {
+            showTimePicker(formFieldsList.get(5));
+        }
+
+        findViewById(R.id.buttonDone).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!isAlarmValid(formFieldsList.get(5).value, formFieldsList.get(6).value)) {
+                    Toast.makeText(AlarmCreateActivity.this, "Please select valid date and time.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                vocalAlarmDTO.setAlarmOn(formFieldsList.get(0).isChecked);
+                vocalAlarmDTO.setLabel(formFieldsList.get(1).value);
+                vocalAlarmDTO.setRingToneUrl(formFieldsList.get(4).value);
+                vocalAlarmDTO.setTime(formFieldsList.get(5).value);
+                vocalAlarmDTO.setDate(formFieldsList.get(6).value);
+                vocalAlarmDTO.setRepeat(formFieldsList.get(7).value);
+                vocalAlarmDTO.setAlarmVolFadeIn(formFieldsList.get(8).isChecked);
+                vocalAlarmDTO.setVibrate(formFieldsList.get(9).isChecked);
+                alarmDbHandler.insertVocalAlarm(vocalAlarmDTO);
+                if (vocalAlarmDTO.isAlarmOn()) {
+                    onOffAlarm();
+                } else {
+                    AlarmUtils.cancelReminderAlarm(AlarmCreateActivity.this, vocalAlarmDTO.getAlarmId());
+                }
+                finish();
+            }
+        });
+
+        findViewById(R.id.buttonRevert).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                finish();
+            }
+        });
+
+        findViewById(R.id.buttonDelete).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                alarmDbHandler.deleteAlarm(vocalAlarmDTO.getAlarmId());
+                AlarmUtils.cancelReminderAlarm(AlarmCreateActivity.this, vocalAlarmDTO.getAlarmId());
+                finish();
+            }
+        });
+        askForAlarmPermission();
+    }
+
+    private void askForAlarmPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Log.i("AlarmCreateActivity", "askForAlarmPermission: this device is below the android 12: " + Build.VERSION.SDK_INT);
+            return;
+        }
+        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        try {
+            if (alarmManager.canScheduleExactAlarms()) {
+                Log.d("AlarmCreateActivity", "onCreate: SCHEDULE ALARM");
+            } else {
+                startActivity(new Intent().setAction(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM));
+            }
+        } catch (Exception e) {
+            Log.i("AlarmCreateActivity", "askForAlarmPermission: this device don't have android 12 version.");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode == RESULT_OK && data != null) {
+            if (requestCode == REQUEST_VOCAL_MESSAGE) {
+                VocalMessageDto vocalMessageDto = data.getParcelableExtra(EXTRA_ALARM_VOC_MSG);
+                this.vocalAlarmDTO.setVocalMessage(vocalMessageDto);
+            } else if (requestCode == REQUEST_VOCAL_PARMS) {
+                vocalAlarmDTO.setVocalSpeed(data.getFloatExtra(EXTRA_ALARM_SPEED, vocalAlarmDTO.getVocalSpeed()));
+                vocalAlarmDTO.setVocalPitch(data.getFloatExtra(EXTRA_ALARM_PITCH, vocalAlarmDTO.getVocalPitch()));
+                vocalAlarmDTO.setVocalVolume(data.getIntExtra(EXTRA_ALARM_VOL, vocalAlarmDTO.getVocalVolume()));
+
+            } else if (requestCode == REQUEST_RINGTONE) {
+                vocalAlarmDTO.setRingToneUrl(data.getStringExtra(EXTRA_ALARM_RINGTONE));
+                AlarmFormItem item = formFieldsList.get(4);
+                item.value = vocalAlarmDTO.getRingToneUrl();
+                try {
+                    if (vocalAlarmDTO.getRingToneUrl() != null) {
+                        item.displayValue = RingtoneUtils.getRingtoneName(AlarmCreateActivity.this, Uri.parse(vocalAlarmDTO.getRingToneUrl()));
+                    }
+                } catch (Exception e) {
+                    Log.e("AlarmCreateActivity", "Exception in parsing ringtone", e);
+                }
+                adapter.notifyItemChanged(4);
+            }
+        }
+    }
+
+    boolean isAlarmValid(String timeV, String dateV) {
+        Calendar cal = Calendar.getInstance();
+        Calendar calCurrent = Calendar.getInstance();
+        Date dateTime = new Date();
+        try {
+            cal.add(Calendar.DAY_OF_MONTH, 1);
+            Date date = dateFormat.parse(dateV);
+            cal.setTime(date);
+        } catch (ParseException e) {
+            Log.e("AlarmCreateActivity", "Exception in onOffAlarm", e);
+        }
+        try {
+            dateTime = timeFormat.parse(getValueOrEmptyString(timeV));
+            cal.set(Calendar.HOUR_OF_DAY, dateTime.getHours());
+            cal.set(Calendar.MINUTE, dateTime.getMinutes());
+        } catch (ParseException e) {
+            Log.e("AlarmCreateActivity", "Exception in onOffAlarm", e);
+        }
+        return cal.after(calCurrent);
+    }
+
+    void onOffAlarm() {
+        Calendar cal = Calendar.getInstance();
+        Date dateTime = new Date();
+        try {
+            cal.add(Calendar.DAY_OF_MONTH, 1);
+            Date date = dateFormat.parse(vocalAlarmDTO.getDate());
+            cal.setTime(date);
+        } catch (ParseException e) {
+            Log.e("AlarmCreateActivity", "Exception in onOffAlarm", e);
+        }
+
+        try {
+            dateTime = timeFormat.parse(getValueOrEmptyString(vocalAlarmDTO.getTime()));
+            cal.set(Calendar.HOUR_OF_DAY, dateTime.getHours());
+            cal.set(Calendar.MINUTE, dateTime.getMinutes());
+        } catch (ParseException e) {
+            Log.e("AlarmCreateActivity", "Exception in onOffAlarm", e);
+        }
+
+        scheduleAlarm(cal.getTimeInMillis());
+        Toast.makeText(getApplicationContext(), "Alarm set for:" + cal.getTime().toLocaleString(), Toast.LENGTH_LONG).show();
+    }
+
+    public void scheduleAlarm(long time) {
+        Intent intentAlarm = new Intent(this, AlarmReceiver.class);
+        intentAlarm.putExtra(EXTRA_ALARM_ID, vocalAlarmDTO.getAlarmId());
+        PendingIntent pending = PendingIntent.getBroadcast(this, vocalAlarmDTO.getAlarmId(),
+                intentAlarm, (PendingIntent.FLAG_IMMUTABLE));
+        AlarmManager alarmManager = (AlarmManager) getApplicationContext().getSystemService(Context.ALARM_SERVICE);
+        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, time, pending);
+    }
+
+    void createDataForForm() {
+        Date mcurrentTime = new Date();
+        try {
+            mcurrentTime = timeFormat.parse(getValueOrEmptyString(vocalAlarmDTO.getTime()));
+        } catch (ParseException e) {
+            e.printStackTrace();
+        }
+        String date = "No Date";
+        if (!TextUtils.isEmpty(vocalAlarmDTO.getDate())) {
+            date = vocalAlarmDTO.getDate();
+        }
+        if (date.equals("No Date")) {
+            Calendar cal = Calendar.getInstance(Locale.ENGLISH);
+            date = android.text.format.DateFormat.format("MM/dd/yy", cal).toString();
+        }
+        String ringtoneDisplay = null;
+        try {
+            if (vocalAlarmDTO.getRingToneUrl() != null) {
+                ringtoneDisplay = RingtoneUtils.getRingtoneName(AlarmCreateActivity.this, Uri.parse(vocalAlarmDTO.getRingToneUrl()));
+            }
+        } catch (Exception e) {
+            Log.e("AlarmCreateActivity", "Exception in parsing ringtone", e);
+        }
+
+        if (vocalAlarmDTO.getLabel() == null) {
+            vocalAlarmDTO.setLabel("");
+        }
+
+        formFieldsList.add(new AlarmFormItem(0, "Turn alarm on", "", "", true, vocalAlarmDTO.isAlarmOn()));
+        //formFieldsList.add(new AlarmFormItem(1,"Label",vocalAlarmDTO.getLabel(),getValueOrEmptyString(vocalAlarmDTO.getLabel()),false,false));
+        if (vocalAlarmDTO.getLabel().contains("/")) {
+            String[] tcolor = vocalAlarmDTO.getLabel().split(" / ");
+            formFieldsList.add(new AlarmFormItem(1, "Label", tcolor[0].trim(), getValueOrEmptyString(tcolor[0].trim()), false, false));
+        } else {
+            formFieldsList.add(new AlarmFormItem(1, "Label", vocalAlarmDTO.getLabel().trim(), getValueOrEmptyString(vocalAlarmDTO.getLabel().trim()), false, false));
+
+        }
+        formFieldsList.add(new AlarmFormItem(2, "Vocal Message", "", "Set vocal message", false, false));
+        formFieldsList.add(new AlarmFormItem(3, "Vocal Parameters", "", "Set volume and other parameters for the voice", false, false));
+        formFieldsList.add(new AlarmFormItem(4, "Ringtone", vocalAlarmDTO.getRingToneUrl(), getValueOrEmptyString(ringtoneDisplay), false, false));
+        formFieldsList.add(new AlarmFormItem(5, "Time", timeFormat.format(mcurrentTime), timeFormat.format(mcurrentTime), false, false));
+        formFieldsList.add(new AlarmFormItem(6, "Date", date, date, false, false));
+        formFieldsList.add(new AlarmFormItem(7, "Repeat", vocalAlarmDTO.getRepeat(), getRepeatDisplay(vocalAlarmDTO.getRepeat()), false, false));
+        formFieldsList.add(new AlarmFormItem(8, "Fade-In on", "", "The volume of alarm is gradually increasing for a gentle awakening", true, vocalAlarmDTO.isAlarmVolFadeIn()));
+        formFieldsList.add(new AlarmFormItem(9, "Vibrate", "", "", true, vocalAlarmDTO.isVibrate()));
+    }
+
+    private String getRepeatDisplay(String repeat) {
+        final String[] days = new String[]{
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+                "Sunday"
+        };
+
+        String displayValue = "Never";
+        List<String> sb = new ArrayList<>();
+
+        if (!TextUtils.isEmpty(repeat)) {
+            String[] checkedValues = repeat.split(",");
+            for (int i = 0; i < Math.min(checkedValues.length, days.length); i++) {
+                if (Boolean.valueOf(checkedValues[i])) {
+                    sb.add(days[i].substring(0, 3));
+                }
+            }
+        }
+        if (!sb.isEmpty()) {
+            return TextUtils.join(", ", sb);
+        }
+
+        return displayValue;
+    }
+
+    private AlarmFormItemSelectedListener alarmFormItemSelectedListener = new AlarmFormItemSelectedListener() {
+        @Override
+        public void onFormItemSelected(AlarmFormItem item) {
+            switch (item.position) {
+                //9414525386 -
+                case 1:
+                    showLabelDialog(item);
+                    break;
+                case 2:
+                    Intent vocalIntent = new Intent(AlarmCreateActivity.this, VocalMessageActivity.class);
+                    vocalIntent.putExtra(EXTRA_ALARM_VOC_MSG, vocalAlarmDTO.getVocalMessage());
+                    vocalIntent.putExtra(EXTRA_ALARM_ID, vocalAlarmDTO.getAlarmId());
+                    startActivityForResult(vocalIntent, REQUEST_VOCAL_MESSAGE);
+                    break;
+                case 3:
+                    Intent vocalPIntent = new Intent(AlarmCreateActivity.this, VocalParamsActivity.class);
+                    vocalPIntent.putExtra(EXTRA_ALARM_SPEED, vocalAlarmDTO.getVocalSpeed());
+                    vocalPIntent.putExtra(EXTRA_ALARM_PITCH, vocalAlarmDTO.getVocalPitch());
+                    vocalPIntent.putExtra(EXTRA_ALARM_VOL, vocalAlarmDTO.getVocalVolume());
+                    startActivityForResult(vocalPIntent, REQUEST_VOCAL_PARMS);
+                    break;
+                case 4:
+                    showRingTonePicker();
+                    break;
+                case 5:
+                    showTimePicker(item);
+                    break;
+                case 6:
+                    setDateOnClick(item);
+                    break;
+                case 7:
+                    showRepeatDialog(item);
+                    break;
+            }
+        }
+    };
+
+    public void showLabelDialog(final AlarmFormItem item) {
+        View mView = getLayoutInflater().inflate(R.layout.alarm_label_input_dialog_box, null);
+        AlertDialog.Builder alertDialogBuilderUserInput = new AlertDialog.Builder(AlarmCreateActivity.this);
+        alertDialogBuilderUserInput.setView(mView);
+
+        final EditText userInputDialogEditText = (EditText) mView.findViewById(R.id.userInputDialog);
+        userInputDialogEditText.setText(item.value);
+        alertDialogBuilderUserInput
+                .setCancelable(false)
+                .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface dialogBox, int id) {
+                        item.value = userInputDialogEditText.getText().toString();
+                        item.displayValue = userInputDialogEditText.getText().toString();
+                        adapter.notifyItemChanged(1);
+                    }
+                })
+
+                .setNegativeButton("Cancel",
+                        new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialogBox, int id) {
+                                dialogBox.cancel();
+                            }
+                        });
+
+        AlertDialog alertDialogAndroid = alertDialogBuilderUserInput.create();
+        alertDialogAndroid.show();
+    }
+
+    public void showTimePicker(final AlarmFormItem item) {
+        Calendar mcurrentTime = Calendar.getInstance();
+        try {
+            mcurrentTime.setTime(timeFormat.parse(getValueOrEmptyString(item.value)));
+        } catch (ParseException e) {
+            e.printStackTrace();
+        }
+        int hour = mcurrentTime.get(Calendar.HOUR_OF_DAY);
+        int minute = mcurrentTime.get(Calendar.MINUTE);
+        TimePickerDialog mTimePicker;
+        mTimePicker = new TimePickerDialog(AlarmCreateActivity.this, new TimePickerDialog.OnTimeSetListener() {
+            @Override
+            public void onTimeSet(TimePicker timePicker, int selectedHour, int selectedMinute) {
+                Calendar mcurrentTime = Calendar.getInstance();
+                mcurrentTime.set(Calendar.HOUR_OF_DAY, selectedHour);
+                mcurrentTime.set(Calendar.MINUTE, selectedMinute);
+                item.displayValue = timeFormat.format(mcurrentTime.getTime());
+                item.value = item.displayValue;
+                adapter.notifyItemChanged(5);
+            }
+        }, hour, minute, false);//Yes 24 hour time
+        mTimePicker.setTitle("Select Time");
+        mTimePicker.show();
+    }
+
+    public void setDateOnClick(final AlarmFormItem item) {
+        Calendar cal = Calendar.getInstance();
+
+        try {
+            cal.setTime(dateFormat.parse(item.value));
+        } catch (ParseException e) {
+            e.printStackTrace();
+        }
+
+
+        DatePickerDialog datePicker = new DatePickerDialog(this, new DatePickerDialog.OnDateSetListener() {
+            public void onDateSet(DatePicker view, int selectedYear,
+                                  int selectedMonth, int selectedDay) {
+                String year1 = String.valueOf(selectedYear);
+                String month1 = String.valueOf(selectedMonth + 1);
+                String day1 = String.valueOf(selectedDay);
+                item.displayValue = (month1 + "/" + day1 + "/" + year1);
+                item.value = dateFormat.format(new Date(selectedYear, selectedMonth, selectedDay));
+                adapter.notifyItemChanged(6);
+            }
+        },
+                cal.get(Calendar.YEAR),
+                cal.get(Calendar.MONTH),
+                cal.get(Calendar.DAY_OF_MONTH));
+        datePicker.setCancelable(false);
+        datePicker.setTitle("Select the date");
+        datePicker.setButton(BUTTON_NEUTRAL, "No Date", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+                item.displayValue = "No Date";
+                item.value = "";
+                adapter.notifyItemChanged(6);
+            }
+        });
+        datePicker.show();
+    }
+
+    public void showRingTonePicker() {
+
+        Intent ringToneIntent = new Intent(AlarmCreateActivity.this, RingtoneSelectActivity.class);
+        ringToneIntent.putExtra(EXTRA_ALARM_RINGTONE, vocalAlarmDTO.getRingToneUrl());
+        startActivityForResult(ringToneIntent, REQUEST_RINGTONE);
+    }
+
+    private void showRepeatDialog(final AlarmFormItem item) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(AlarmCreateActivity.this);
+        final String[] days = new String[]{
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+                "Sunday"
+        };
+        // Boolean array for initial selected items
+        final boolean[] checkedDays = new boolean[]{
+                false, // Monday
+                false, // Tuesday
+                false, // Wednesday
+                false, // Thursday
+                false, // Friday
+                false, // Saturday
+                false, // Sunday
+
+        };
+        if (!TextUtils.isEmpty(item.value)) {
+            String[] checkedValues = item.value.split(",");
+            for (int i = 0; i < Math.min(checkedValues.length, checkedDays.length); i++) {
+                checkedDays[i] = Boolean.valueOf(checkedValues[i]);
+            }
+        }
+
+        // Convert the days array to list
+        final List<String> daysList = Arrays.asList(days);
+        builder.setMultiChoiceItems(days, checkedDays, new DialogInterface.OnMultiChoiceClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which, boolean isChecked) {
+
+                // Update the current focused item's checked status
+                checkedDays[which] = isChecked;
+
+                // Get the current focused item
+                String currentItem = daysList.get(which);
+
+                // Notify the current action
+                Toast.makeText(getApplicationContext(),
+                        currentItem + " " + isChecked, Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        // Specify the dialog is not cancelable
+        builder.setCancelable(false);
+
+        // Set a title for alert dialog
+        builder.setTitle("Repeat");
+
+        // Set the positive/yes button click listener
+        builder.setPositiveButton("OK", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                // Do something when click positive button
+//                item.value = userInputDialogEditText.getText().toString();
+                item.displayValue = "Never";
+                List<String> sb = new ArrayList<>();
+
+                for (int i = 0; i < checkedDays.length; i++) {
+                    boolean checked = checkedDays[i];
+                    if (checked) {
+                        sb.add(days[i].substring(0, 3));
+                    }
+                }
+                if (!sb.isEmpty()) {
+                    item.displayValue = TextUtils.join(", ", sb);
+                    item.value = join(",", checkedDays);
+                } else {
+                    item.value = "";
+                }
+                adapter.notifyItemChanged(7);
+            }
+        });
+
+        // Set the negative/no button click listener
+        builder.setNegativeButton("Cancel", null);
+
+        AlertDialog dialog = builder.create();
+        // Display the alert dialog on interface
+        dialog.show();
+    }
+
+    public static String join(CharSequence delimiter, boolean[] boolArray) {
+        StringBuilder sb = new StringBuilder();
+
+        if (boolArray.length > 0) {
+            sb.append(boolArray[0]);
+            for (int i = 1; i < boolArray.length; i++) {
+                sb.append(delimiter);
+                sb.append(boolArray[i]);
+            }
+        }
+        return sb.toString();
+    }
+
+    interface AlarmFormItemSelectedListener {
+        void onFormItemSelected(AlarmFormItem item);
+    }
+
+    class AlarmFormItem {
+        int position;
+        String name;
+        String value;
+        String displayValue;
+        boolean showCheckBox = false;
+        boolean isChecked = false;
+
+        AlarmFormItem(int position, String name, String value, String displayValue, boolean showCheckBox, boolean isChecked) {
+            this.position = position;
+            this.name = name;
+            this.value = value;
+            this.displayValue = displayValue;
+            this.showCheckBox = showCheckBox;
+            this.isChecked = isChecked;
+        }
+    }
+}
